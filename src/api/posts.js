@@ -44,27 +44,53 @@ router.post('/', async (req, res, next) => {
 //Part 1: Fetching blog posts
 router.get('/', async (req, res, next) => {
   try {
+    //-----------Validations -----------//
     //Validate user
     if (!req.user) {
       return res.send(401).json({ message: 'Log in required' });
     }
 
     // check if authorIds is sent
-    if (!req.body.authorIds) {
-      res.send(400).json({ error: 'Must provide authorIds' });
+    if (!req.query.authorIds) {
+      return res.send(400).json({ error: 'Must provide authorIds' });
     }
 
     //make single element into array
-    let authors = req.body.authorIds;
-    if (!Array.isArray(authors)) {
-      authors = [authors];
+    let authors = req.query.authorIds;
+
+    //authors is passed as a string, convert to array
+    //if not an array assume its a single element
+
+    authors = authors.split(',').map(Number);
+    //if an array, make sure all elements are positive numbers
+    if (!validateArrays(authors)) {
+      return res
+        .send(400)
+        .json({ error: 'authorIds must be a positive number' });
     }
+
+    const sortVal = req.query.sortBy ? req.query.sortBy : 'id';
+    const asdOrDsn = req.query.direction ? req.query.direction : 'asc';
+
+    if (!['id', 'reads', 'likes', 'popularity'].includes(sortVal)) {
+      return res
+        .send(400)
+        .json({ error: 'sortBy must be one of id, reads, likes, popularity' });
+    }
+
+    if (!['asc', 'desc'].includes(asdOrDsn)) {
+      return res
+        .send(400)
+        .json({ error: 'direction must be one of asc, desc' });
+    }
+
+    //----------- End of Validations -----------//
+
     let existingPosts = new Set();
     let posts = [];
     for (let i = 0; i < authors.length; i++) {
-      const author = authors[i];
       // fetch posts from each author
-      let authorPosts = await Post.getPostsByUserId(author);
+      let authorPosts = await Post.getPostsByUserId(authors[i]);
       authorPosts.forEach((post) => {
         //check if post is already in the list
         if (!existingPosts.has(post.id)) {
@@ -74,11 +100,9 @@ router.get('/', async (req, res, next) => {
         }
       });
     }
-    const sortVal = req.body.sortBy ? req.body.sortBy : 'Id';
-    const asdOrDdn = req.body.direction ? req.body.direction : 'asc';
 
     //sort objects
-    if (asdOrDdn === 'asc') {
+    if (asdOrDsn === 'asc') {
       posts.sort((a, b) => {
         return a[sortVal] - b[sortVal];
       });
@@ -87,10 +111,8 @@ router.get('/', async (req, res, next) => {
         return b[sortVal] - a[sortVal];
       });
     }
-    //TODO: Test says this is sending a random object at the end? why?
-    //Postman is not able to see it
 
-    res.json({ posts });
+    return res.status(200).json({ posts: posts });
   } catch (error) {
     next(error);
   }
@@ -100,9 +122,15 @@ router.get('/', async (req, res, next) => {
 
 router.patch('/:postId', async (req, res, next) => {
   try {
+    //-----------Validations -----------//
+
     //Validate user
     if (!req.user) {
       return res.send(401).json({ message: 'Log in required' });
+    }
+
+    if (isInvalidNumber(req.params.postId)) {
+      return res.send(400).json({ error: 'postId must be a positive number' });
     }
 
     //validate if user is author of post
@@ -125,16 +153,29 @@ router.patch('/:postId', async (req, res, next) => {
     //the post should exist as it was validated before
 
     //update the post
-    const { authorIds, text, tags } = req.body;
-
+    const { text, tags } = req.body;
+    let authorIds = req.body.authorIds;
+    console.log(authorIds);
     if (authorIds) {
       //update authorIds in UserPost
+
+      if (!Array.isArray(authorIds)) {
+        //if not an array assume its a single element
+        return res.send(400).json({ error: 'authorIds must be an array' });
+      }
+
+      if (!validateArrays(authorIds)) {
+        return res
+          .send(400)
+          .json({ error: 'authorIds must be a positive number' });
+      }
 
       //should we keep the old records? should the author be able to delete his own id?
       //if we delete the old records, the author will not be able to edit the post anymore
       //assumes we delete all the old records for the post and create new ones with the updated authorIds
       await UserPost.destroy({ where: { postId: req.params.postId } });
 
+      //add new records for updated authorIds
       authorIds.forEach(async (authorId) => {
         const createdRecord = await UserPost.create({
           userId: authorId,
@@ -144,22 +185,25 @@ router.patch('/:postId', async (req, res, next) => {
       });
     }
     if (text) {
+      if (text.length === 0) {
+        return res.send(400).json({ error: 'text cannot be empty' });
+      }
       //update text in Post
       FoundPost.text = text;
     }
 
     if (tags) {
+      if (tags.length === 0) {
+        return res.send(400).json({ error: 'tags must not be empty' });
+      }
       //assumes that tags are replaced with new ones
       FoundPost.tags = tags.join(',');
     }
 
     if (tags || text) {
+      //save the edited posts
       await FoundPost.save();
     }
-
-    // let post = await Post.findOne(
-    //   { where: { Id: req.params.postId }, plain: true }
-    // );
 
     let post = FoundPost.get({ plain: true });
     const foundIds = await UserPost.findAll({
@@ -174,10 +218,23 @@ router.patch('/:postId', async (req, res, next) => {
 
     post.authorIds = authors;
     post.tags = post.tags.split(',');
-    res.status(200).json({ post });
+    return res.status(200).json({ post });
   } catch (error) {
     next(error);
   }
 });
+
+function isInvalidNumber(number) {
+  return isNaN(number) || number < 0;
+}
+
+function validateArrays(arrays) {
+  for (let i = 0; i < arrays.length; i++) {
+    if (isInvalidNumber(arrays[i])) {
+      return false;
+    }
+  }
+  return true;
+}
 
 module.exports = router;
