@@ -1,6 +1,6 @@
 const express = require('express');
 const { Post, UserPost } = require('../db/models');
-
+const { Op } = require('sequelize');
 const router = express.Router();
 
 const sortByOptions = ['id', 'reads', 'likes', 'popularity'];
@@ -60,59 +60,64 @@ router.get('/', async (req, res, next) => {
       return res.send(UNAUTHORIZED).json({ message: 'Log in required' });
     }
 
+    const {
+      authorID = {},
+      sortBy = sortByOptions[0],
+      direction = directionOptions[0],
+    } = req.query;
+
     // check if authorIds is sent
-    if (!req.query.authorIds) {
+    if (!authorID) {
       return res.send(BAD_REQUEST).json({ error: 'Must provide authorIds' });
     }
 
     //authors is passed as a string, convert to array
     const authors = req.query.authorIds.split(',').map(Number);
     //if an array, make sure all elements are positive numbers
-    if (!validateArrays(authors)) {
+    if (!validateArrays(authors, isInvalidNumber)) {
       return res
         .send(BAD_REQUEST)
         .json({ error: 'authorIds must be a positive number' });
     }
 
-    const sortParameter = req.query.sortBy ? req.query.sortBy : 'id';
-    const sortDirection = req.query.direction ? req.query.direction : 'asc';
-
-    if (!sortByOptions.includes(sortParameter)) {
+    if (!sortByOptions.includes(sortBy)) {
       return res
         .send(BAD_REQUEST)
         .json({ error: 'sortBy must be one of id, reads, likes, popularity' });
     }
 
-    if (!directionOptions.includes(sortDirection)) {
+    if (!directionOptions.includes(direction)) {
       return res
         .send(BAD_REQUEST)
         .json({ error: 'direction must be one of asc, desc' });
     }
 
-    const existingPosts = new Set();
-    const posts = [];
+    const postsRaw = await Post.findAll({
+      include: [
+        {
+          model: UserPost,
+          attributes: [],
+          where: {
+            userId: { [Op.in]: authors },
+          },
+          raw: true,
+        },
+      ],
+    });
 
-    for (let i = 0; i < authors.length; i++) {
-      // fetch posts from each author
-      const authorPosts = await Post.getPostsByUserId(authors[i]);
-      authorPosts.forEach((post) => {
-        //check if post is already in the list if not add to list
-        if (!existingPosts.has(post.id)) {
-          post.tags = post.tags.split(',');
-          posts.push(post.dataValues);
-          existingPosts.add(post.id);
-        }
-      });
-    }
+    const posts = postsRaw.map((post) => {
+      post.tags = post.tags.split(',');
+      return post.dataValues;
+    });
 
     //sort objects
-    if (sortDirection === 'asc') {
+    if (direction === directionOptions[0]) {
       posts.sort((a, b) => {
-        return a[sortParameter] - b[sortParameter];
+        return a[sortBy] - b[sortBy];
       });
     } else {
       posts.sort((a, b) => {
-        return b[sortParameter] - a[sortParameter];
+        return b[sortBy] - a[sortBy];
       });
     }
 
@@ -140,9 +145,9 @@ router.patch('/:postId', async (req, res, next) => {
     }
 
     //get the  post to be updated
-    const FoundPost = await Post.findOne({ where: { Id: req.params.postId } });
+    const foundPost = await Post.findOne({ where: { Id: req.params.postId } });
 
-    if (!FoundPost) {
+    if (!foundPost) {
       return res.send(NOT_FOUND).json({ error: 'Post not found' });
     }
 
@@ -174,60 +179,92 @@ router.patch('/:postId', async (req, res, next) => {
           .json({ error: 'authorIds must be an array' });
       }
 
-      if (!validateArrays(authorIds)) {
+      if (!validateArrays(authorIds, isInvalidNumber)) {
         return res
           .send(BAD_REQUEST)
           .json({ error: 'authorIds must be a positive number' });
       }
 
-      //assumes we delete all the old records for the post and create new ones with the updated authorIds
-      await UserPost.destroy({ where: { postId: req.params.postId } });
+      //find all authorIds for this post
+      const existingAuthorIds = (
+        await UserPost.findAll({
+          attributes: ['user_id'],
+          where: { postId: req.params.postId },
+          raw: true,
+        })
+      ).map((user) => user.user_id);
+
+      const authorIdsToAdd = authorIds.filter(
+        (authorId) => !existingAuthorIds.includes(authorId)
+      );
+
+      //add all the values not already in the table
+      if (authorIdsToAdd.length != 0) {
+        authorIdsToAdd.forEach(async (authorId) => {
+          const createdRecord = await UserPost.create({
+            userId: authorId,
+            postId: req.params.postId,
+          });
+          await createdRecord.save();
+        });
+      }
+      //delete all the values not passed in body
+      await UserPost.destroy({
+        where: { postId: req.params.postId, userId: { [Op.notIn]: authorIds } },
+      });
 
       //add new records for updated authorIds
-      authorIds.forEach(async (authorId) => {
-        const createdRecord = await UserPost.create({
-          userId: authorId,
-          postId: req.params.postId,
-        });
-        await createdRecord.save();
-      });
     }
 
     if (text) {
       if (typeof text !== 'string' || text.length === 0) {
         return res
-          .send(BAD_REQUEST)
+          .status(BAD_REQUEST)
           .json({ error: 'text must be a non-empty string' });
       }
       //update text in Post
-      FoundPost.text = text;
+      foundPost.text = text;
     }
 
     if (tags) {
+      if (!validateArrays(tags, isInvalidString)) {
+        return res
+          .status(BAD_REQUEST)
+          .json({ error: 'tags must be a string and cannot be empty' });
+      }
+
       if (tags.length === 0) {
         return res.send(BAD_REQUEST).json({ error: 'tags must not be empty' });
       }
       //assumes that tags are replaced with new ones
-      FoundPost.tags = tags.join(',');
+      foundPost.tags = tags.join(',');
     }
 
     if (tags || text) {
       //save the edited posts
-      await FoundPost.save();
+      await foundPost.save();
     }
 
-    const post = FoundPost.get({ plain: true });
-    const foundIds = await UserPost.findAll({
-      attributes: ['userId'],
-      where: { postId: req.params.postId },
-    });
+    const post = foundPost.get({ plain: true });
 
-    const authors = [];
-    foundIds.forEach((user) => {
-      authors.push(user.dataValues.userId);
-    });
+    //find authorids from post and return it if not being updated
+    if (!req.body.authorIDs) {
+      const foundIds = await UserPost.findAll({
+        attributes: ['userId'],
+        where: { postId: req.params.postId },
+      });
 
-    post.authorIds = authors;
+      const authors = [];
+      foundIds.forEach((user) => {
+        authors.push(user.dataValues.userId);
+      });
+
+      post.authorIds = authors;
+    } else {
+      //if it is being updated, just return the req.body.authorIds
+      post.authorIds = req.body.authorIds;
+    }
+
     post.tags = post.tags.split(',');
     return res.status(OK).json({ post });
   } catch (error) {
@@ -239,9 +276,21 @@ function isInvalidNumber(number) {
   return isNaN(number) || number < 0;
 }
 
-function validateArrays(arrays) {
+function isInvalidString(string) {
+  return typeof string !== 'string' || string.length === 0;
+}
+
+function validateArrays(arrays, elementValidator) {
+  if (!Array.isArray(arrays)) {
+    return false;
+  }
+  if (arrays.length === 0) {
+    return false;
+  } //has no ids
+
+  //check if valid IDs
   arrays.forEach((element) => {
-    if (isInvalidNumber(element)) {
+    if (elementValidator(element)) {
       return false;
     }
   });
