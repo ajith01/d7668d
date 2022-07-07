@@ -57,38 +57,36 @@ router.get('/', async (req, res, next) => {
   try {
     //Validate user
     if (!req.user) {
-      return res.send(UNAUTHORIZED).json({ message: 'Log in required' });
+      return res.status(UNAUTHORIZED).json({ message: 'Log in required' });
     }
 
     const {
-      authorID = {},
+      authorIds,
       sortBy = sortByOptions[0],
       direction = directionOptions[0],
     } = req.query;
 
     // check if authorIds is sent
-    if (!authorID) {
-      return res.send(BAD_REQUEST).json({ error: 'Must provide authorIds' });
+    if (!authorIds) {
+      return res.status(BAD_REQUEST).json({ error: 'Must provide authorIds' });
     }
-
-    //authors is passed as a string, convert to array
     const authors = req.query.authorIds.split(',').map(Number);
     //if an array, make sure all elements are positive numbers
     if (!validateArrays(authors, isInvalidNumber)) {
       return res
-        .send(BAD_REQUEST)
+        .status(BAD_REQUEST)
         .json({ error: 'authorIds must be a positive number' });
     }
 
     if (!sortByOptions.includes(sortBy)) {
       return res
-        .send(BAD_REQUEST)
+        .status(BAD_REQUEST)
         .json({ error: 'sortBy must be one of id, reads, likes, popularity' });
     }
 
     if (!directionOptions.includes(direction)) {
       return res
-        .send(BAD_REQUEST)
+        .status(BAD_REQUEST)
         .json({ error: 'direction must be one of asc, desc' });
     }
 
@@ -135,12 +133,12 @@ router.patch('/:postId', async (req, res, next) => {
   try {
     //Validate user
     if (!req.user) {
-      return res.send(UNAUTHORIZED).json({ message: 'Log in required' });
+      return res.status(UNAUTHORIZED).json({ message: 'Log in required' });
     }
 
     if (isInvalidNumber(req.params.postId)) {
       return res
-        .send(BAD_REQUEST)
+        .status(BAD_REQUEST)
         .json({ error: 'postId must be a positive number' });
     }
 
@@ -148,7 +146,7 @@ router.patch('/:postId', async (req, res, next) => {
     const foundPost = await Post.findOne({ where: { Id: req.params.postId } });
 
     if (!foundPost) {
-      return res.send(NOT_FOUND).json({ error: 'Post not found' });
+      return res.status(NOT_FOUND).json({ error: 'Post not found' });
     }
 
     //validate if user is author of post
@@ -175,13 +173,13 @@ router.patch('/:postId', async (req, res, next) => {
       if (!Array.isArray(authorIds)) {
         //if not an array assume its a single element
         return res
-          .send(BAD_REQUEST)
+          .status(BAD_REQUEST)
           .json({ error: 'authorIds must be an array' });
       }
 
       if (!validateArrays(authorIds, isInvalidNumber)) {
         return res
-          .send(BAD_REQUEST)
+          .status(BAD_REQUEST)
           .json({ error: 'authorIds must be a positive number' });
       }
 
@@ -212,8 +210,6 @@ router.patch('/:postId', async (req, res, next) => {
       await UserPost.destroy({
         where: { postId: req.params.postId, userId: { [Op.notIn]: authorIds } },
       });
-
-      //add new records for updated authorIds
     }
 
     if (text) {
@@ -230,11 +226,13 @@ router.patch('/:postId', async (req, res, next) => {
       if (!validateArrays(tags, isInvalidString)) {
         return res
           .status(BAD_REQUEST)
-          .json({ error: 'tags must be a string and cannot be empty' });
+          .json({ error: 'tags must be a nonempty array of strings' });
       }
 
       if (tags.length === 0) {
-        return res.send(BAD_REQUEST).json({ error: 'tags must not be empty' });
+        return res
+          .status(BAD_REQUEST)
+          .json({ error: 'tags must not be empty' });
       }
       //assumes that tags are replaced with new ones
       foundPost.tags = tags.join(',');
@@ -289,12 +287,7 @@ function validateArrays(arrays, elementValidator) {
   } //has no ids
 
   //check if valid IDs
-  arrays.forEach((element) => {
-    if (elementValidator(element)) {
-      return false;
-    }
-  });
-  return true;
+  return arrays.every((element) => !elementValidator(element));
 }
 
 module.exports = router;
